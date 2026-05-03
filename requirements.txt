@@ -1,0 +1,11 @@
+fastapi>=0.103.0
+uvicorn[standard]>=0.23.0
+# The following libraries are included for compatibility with your existing rPPG scripts
+# Note: For production without GUI, we use opencv-python-headless
+opencv-python-headless>=4.8.0
+mediapipe>=0.10.9
+numpy>=1.24.0
+scipy>=1.11.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+fpdf2>=2.7.5

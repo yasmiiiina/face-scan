@@ -341,39 +341,3 @@ class RPPGSystem:
 if __name__ == "__main__":
     sys = RPPGSystem()
     sys.run()
-
-# --- Section FastAPI ---
-from fastapi import FastAPI
-import random
-
-app = FastAPI(
-    title="PEREN AI - rPPG Test API",
-    description="API de test pour le module Face Scan (déploiement dummy)",
-    version="1.0.0"
-)
-
-@app.get("/")
-def read_root():
-    """Point d'entrée pour vérifier le statut de l'API."""
-    return {"status": "ok", "message": "PEREN AI Face Scan API is running."}
-
-@app.get("/health")
-def get_health_metrics():
-    """Génère des métriques factices pour simuler le comportement du scan de visage."""
-    hr = random.randint(60, 90)
-    hrv = random.uniform(30.0, 60.0)
-    
-    if hr < 65:
-        stress = "Low (Relaxed)"
-    elif hr <= 80:
-        stress = "Normal"
-    else:
-        stress = "High Stress"
-        
-    return {
-        "heart_rate_bpm": hr,
-        "hrv_rmssd_ms": round(hrv, 2),
-        "stress_level": stress,
-        "score_out_of_100": random.randint(75, 95)
-    }
-
