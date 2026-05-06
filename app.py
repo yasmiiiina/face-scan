@@ -4,9 +4,10 @@ import numpy as np
 import csv
 import threading
 import queue
+import os
 from datetime import datetime
 
-from flask import Flask, Response, render_template, jsonify
+from flask import Flask, Response, render_template, jsonify, request, send_file, send_from_directory
 
 from face_detection import FaceDetector
 from signal_extraction import SignalExtractor
@@ -27,7 +28,7 @@ class RPPGSystem:
         self.classifier = Classifier()
         
         self.fps_target = 30
-        self.acquisition_time = 35 # seconds
+        self.acquisition_time = 20 # seconds
         self.buffer_size = self.acquisition_time * self.fps_target
         self.raw_signal_buffer = []
         self.time_buffer = []
@@ -61,6 +62,10 @@ class RPPGSystem:
         
         # UI State
         self.is_acquiring = True
+        self.last_signal_progress_ts = time.time()
+        self.acquisition_started_ts = time.time()
+        self.last_frontend_fps = 30.0
+        self.state_lock = threading.Lock()
 
     def camera_thread(self):
         """Thread 1: Capture vidéo fluide."""
@@ -92,6 +97,10 @@ class RPPGSystem:
                 
                 self.raw_signal_buffer.append(green_val)
                 self.time_buffer.append(timestamp)
+                with self.state_lock:
+                    self.last_signal_progress_ts = time.time()
+                    if len(self.raw_signal_buffer) <= 1:
+                        self.acquisition_started_ts = self.last_signal_progress_ts
                 
                 if len(self.raw_signal_buffer) > self.buffer_size:
                     self.raw_signal_buffer.pop(0)
@@ -137,6 +146,25 @@ class RPPGSystem:
                 except queue.Empty:
                     pass
             self.result_queue.put((display_frame, face_found, bbox if face_found else None, fps if face_found else 30.0))
+
+    def reset_scan_state(self):
+        """Reinitialise l'etat de scan pour sortir d'un blocage."""
+        with self.state_lock:
+            self.raw_signal_buffer.clear()
+            self.time_buffer.clear()
+            self.filtered_signal = []
+            self.is_acquiring = False
+            now = time.time()
+            self.last_signal_progress_ts = now
+            self.acquisition_started_ts = now
+
+    def is_scan_stuck(self):
+        """Detecte un scan bloque (pas de progression durable)."""
+        with self.state_lock:
+            now = time.time()
+            no_progress_for = now - self.last_signal_progress_ts
+            acquiring_for = now - self.acquisition_started_ts
+            return self.is_acquiring and (no_progress_for > 10.0 or acquiring_for > (self.acquisition_time * 2.0))
 
     def start(self):
         """Starts the background threads."""
@@ -232,7 +260,7 @@ class RPPGSystem:
             cv2.putText(frame, "PHASE D'ACQUISITION", (x_m, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
             y_cursor += 25
             cv2.putText(frame, "Veuillez garder une position de repos", (x_m, y_cursor), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
-            cv2.putText(frame, "pendant 35 a 60 secondes.", (x_m, y_cursor + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
+            cv2.putText(frame, "pendant 20 secondes.", (x_m, y_cursor + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA)
             
             y_cursor += 45
             # Progress Bar
@@ -337,6 +365,74 @@ sys_instance = RPPGSystem()
 sys_instance.start()
 
 app = Flask(__name__)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPORTS_DIR = os.path.join(BASE_DIR, "reports")
+os.makedirs(REPORTS_DIR, exist_ok=True)
+latest_session_payload = None
+scan_finalize_lock = threading.Lock()
+scan_finalize_in_progress = False
+
+
+def _response_payload(status="error", message="", metrics=None, states=None, scan_id="", pdf_url=""):
+    return {
+        "status": status,
+        "message": message,
+        "scan_id": scan_id,
+        "metrics": {
+            "hr": (metrics or {}).get("hr", 0.0),
+            "hrv": (metrics or {}).get("hrv", 0.0),
+            "rr": (metrics or {}).get("rr", 0.0),
+            "score": (metrics or {}).get("score", 0.0),
+            "bp": (metrics or {}).get("bp", "--"),
+            "stress_index": (metrics or {}).get("stress_index", 0.0),
+            "workload": (metrics or {}).get("workload", 0.0),
+        },
+        "states": {
+            "wellness": (states or {}).get("wellness", "Indisponible"),
+            "heart_rate": (states or {}).get("heart_rate", "Indisponible"),
+            "stress": (states or {}).get("stress", "Indisponible"),
+        },
+        "pdf_url": pdf_url,
+        "retry_after_ms": 0,
+        "acquiring": bool(sys_instance.is_acquiring),
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def _safe_scan_fps(value, fallback=30.0):
+    try:
+        fps = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not np.isfinite(fps) or fps <= 0:
+        return fallback
+    return fps
+
+
+def _build_current_metrics():
+    hr = round(float(sys_instance.current_hr), 2)
+    hrv = round(float(sys_instance.current_hrv), 2)
+    rr = round(float(sys_instance.current_rr), 2)
+    score = round(float(sys_instance.current_score), 2)
+    stress_idx = round(float(sys_instance.current_stress_idx), 2)
+    workload = round(float(sys_instance.current_workload), 2)
+    return {
+        "hr": hr,
+        "hrv": hrv,
+        "rr": rr,
+        "score": score,
+        "bp": str(sys_instance.current_bp),
+        "stress_index": stress_idx,
+        "workload": workload,
+    }
+
+
+def _build_current_states():
+    return {
+        "wellness": sys_instance.classifier.classify_state_by_score(sys_instance.current_score),
+        "heart_rate": sys_instance.current_state,
+        "stress": sys_instance.current_stress[0] if isinstance(sys_instance.current_stress, tuple) else str(sys_instance.current_stress),
+    }
 
 @app.route('/')
 def index():
@@ -349,12 +445,184 @@ def video_feed():
 @app.route('/export_pdf', methods=['POST'])
 def export_pdf():
     try:
-        sys_instance.csv_file.flush()
+        global latest_session_payload
+        session = latest_session_payload
+        if not session:
+            return jsonify({"status": "error", "message": "Aucun scan recent disponible pour export PDF."}), 409
         reporter = PDFReport()
-        reporter.generate()
-        return jsonify({"status": "success"})
+        report_name = f"PEREN_Report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+        report_path = os.path.join(REPORTS_DIR, report_name)
+        generated = reporter.generate(
+            output_path=report_path,
+            session_data={
+                "scan_id": session.get("scan_id"),
+                "metrics": session.get("metrics", {}),
+                "states": session.get("states", {}),
+                "timestamp": session.get("timestamp"),
+            },
+        )
+        if not generated:
+            return jsonify({"status": "error", "message": "Generation PDF impossible."}), 500
+        return send_file(generated, as_attachment=True, download_name=os.path.basename(generated), mimetype="application/pdf")
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/process_scan', methods=['POST'])
+def process_scan():
+    # Endpoint de compatibilite avec le front (video non necessaire dans ce mode live).
+    _ = request.files.get("video")
+    frontend_fps = _safe_scan_fps(request.form.get("fps"), fallback=30.0)
+    sys_instance.last_frontend_fps = frontend_fps
+    scan_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    global scan_finalize_in_progress
+    with scan_finalize_lock:
+        if scan_finalize_in_progress:
+            conflict_payload = _response_payload(
+                status="pending",
+                message="Scan deja en cours de finalisation.",
+                scan_id=scan_id,
+            )
+            conflict_payload["retry_after_ms"] = 1200
+            conflict_payload["acquiring"] = True
+            return jsonify(conflict_payload), 409
+
+    if sys_instance.is_acquiring:
+        if sys_instance.is_scan_stuck():
+            sys_instance.reset_scan_state()
+            stuck_payload = _response_payload(
+                status="error",
+                message="Etat de scan bloque detecte. Le serveur a ete reinitialise, relance un nouveau scan.",
+                scan_id=scan_id,
+            )
+            stuck_payload["retry_after_ms"] = 0
+            stuck_payload["acquiring"] = False
+            return jsonify(stuck_payload), 409
+
+        pending_payload = _response_payload(
+            status="pending",
+            message="Acquisition en cours. Attends la fin du scan.",
+            scan_id=scan_id,
+        )
+        pending_payload["retry_after_ms"] = 1500
+        return jsonify(pending_payload), 409
+
+    metrics = _build_current_metrics()
+    states = _build_current_states()
+    metrics["frontend_fps"] = round(float(frontend_fps), 2)
+
+    try:
+        global latest_session_payload
+        sys_instance.csv_file.flush()
+        with scan_finalize_lock:
+            scan_finalize_in_progress = True
+
+        result_container = {"payload": None, "status_code": 500}
+
+        def _finalize_scan():
+            global scan_finalize_in_progress
+            try:
+                report_name = f"PEREN_Report_{scan_id}.pdf"
+                report_path = os.path.join(REPORTS_DIR, report_name)
+                payload_preview = _response_payload(
+                    status="success",
+                    message="Analyse terminee.",
+                    metrics=metrics,
+                    states=states,
+                    scan_id=scan_id,
+                )
+                generated = PDFReport().generate(
+                    output_path=report_path,
+                    session_data={
+                        "scan_id": scan_id,
+                        "metrics": metrics,
+                        "states": states,
+                        "timestamp": payload_preview.get("timestamp"),
+                    },
+                )
+                if not generated:
+                    result_container["payload"] = _response_payload(
+                        status="error",
+                        message="Generation PDF echouee.",
+                        metrics=metrics,
+                        states=states,
+                        scan_id=scan_id,
+                    )
+                    result_container["status_code"] = 500
+                    return
+
+                success_payload = _response_payload(
+                    status="success",
+                    message="Analyse terminee.",
+                    metrics=metrics,
+                    states=states,
+                    scan_id=scan_id,
+                    pdf_url=f"/reports/{os.path.basename(generated)}",
+                )
+                result_container["payload"] = success_payload
+                result_container["status_code"] = 200
+            except Exception as thread_exc:
+                result_container["payload"] = _response_payload(
+                    status="error",
+                    message=f"Echec finalisation scan: {thread_exc}",
+                    metrics=metrics,
+                    states=states,
+                    scan_id=scan_id,
+                )
+                result_container["status_code"] = 500
+            finally:
+                with scan_finalize_lock:
+                    scan_finalize_in_progress = False
+                if result_container["status_code"] >= 500:
+                    sys_instance.reset_scan_state()
+
+        worker = threading.Thread(target=_finalize_scan, daemon=True)
+        worker.start()
+        worker.join(timeout=20.0)
+
+        if worker.is_alive():
+            timeout_payload = _response_payload(
+                status="error",
+                message="Timeout de finalisation scan. Reessaie un nouveau scan.",
+                metrics=metrics,
+                states=states,
+                scan_id=scan_id,
+            )
+            timeout_payload["acquiring"] = False
+            sys_instance.reset_scan_state()
+            with scan_finalize_lock:
+                scan_finalize_in_progress = False
+            return jsonify(timeout_payload), 500
+
+        payload = result_container["payload"] or _response_payload(
+            status="error",
+            message="Finalisation scan inconnue.",
+            metrics=metrics,
+            states=states,
+            scan_id=scan_id,
+        )
+        status_code = int(result_container["status_code"])
+        if status_code == 200:
+            latest_session_payload = payload
+        return jsonify(payload), status_code
+    except Exception as exc:
+        with scan_finalize_lock:
+            scan_finalize_in_progress = False
+        sys_instance.reset_scan_state()
+        return jsonify(
+            _response_payload(
+                status="error",
+                message=str(exc),
+                metrics=metrics,
+                states=states,
+                scan_id=scan_id,
+            )
+        ), 500
+
+
+@app.route('/reports/<path:filename>', methods=['GET'])
+def download_report(filename):
+    return send_from_directory(REPORTS_DIR, filename, as_attachment=True)
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

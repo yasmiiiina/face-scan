@@ -27,6 +27,28 @@ for folder in (UPLOAD_DIR, RESULTS_DIR, REPORTS_DIR):
 app = Flask(__name__)
 
 
+def _build_scan_response(status="error", message="", scan_id=None, result=None):
+    result = result or {}
+    return {
+        "status": status,
+        "message": message,
+        "scan_id": scan_id or result.get("scan_id") or "",
+        "metrics": {
+            "hr": result.get("hr", 0.0),
+            "hrv": result.get("hrv", 0.0),
+            "rr": result.get("rr", 0.0),
+            "score": result.get("score", 0.0),
+        },
+        "states": {
+            "wellness": result.get("wellness_state", "Indisponible"),
+            "heart_rate": result.get("bpm_state", "Indisponible"),
+            "stress": result.get("stress_state", "Indisponible"),
+        },
+        "pdf_url": result.get("pdf_url", ""),
+        "timestamp": result.get("timestamp", datetime.utcnow().isoformat() + "Z"),
+    }
+
+
 def _safe_fps(fps_value):
     if fps_value is None or fps_value <= 0 or fps_value > 240:
         return 30.0
@@ -156,41 +178,27 @@ def index():
 @app.route("/process_scan", methods=["POST"])
 def process_scan():
     if "video" not in request.files:
-        return jsonify({"status": "error", "message": "Aucun fichier video recu."}), 400
+        return jsonify(_build_scan_response(status="error", message="Aucun fichier video recu.")), 400
 
     video_file = request.files["video"]
     if not video_file or video_file.filename == "":
-        return jsonify({"status": "error", "message": "Nom de fichier video invalide."}), 400
+        return jsonify(_build_scan_response(status="error", message="Nom de fichier video invalide.")), 400
 
     scan_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
     extension = os.path.splitext(video_file.filename)[1] or ".webm"
     upload_path = os.path.join(UPLOAD_DIR, f"{scan_id}{extension}")
-    video_file.save(upload_path)
+    try:
+        video_file.save(upload_path)
+    except Exception as exc:
+        return jsonify(_build_scan_response(status="error", message=f"Sauvegarde video impossible: {exc}", scan_id=scan_id)), 500
 
     try:
         result = run_rppg_pipeline(upload_path, scan_id)
     except Exception as exc:
-        return jsonify({"status": "error", "message": str(exc), "scan_id": scan_id}), 500
+        return jsonify(_build_scan_response(status="error", message=str(exc), scan_id=scan_id)), 500
 
-    return jsonify(
-        {
-            "status": "success",
-            "scan_id": result["scan_id"],
-            "metrics": {
-                "hr": result["hr"],
-                "hrv": result["hrv"],
-                "rr": result["rr"],
-                "score": result["score"],
-            },
-            "states": {
-                "wellness": result["wellness_state"],
-                "heart_rate": result["bpm_state"],
-                "stress": result["stress_state"],
-            },
-            "pdf_url": f"/reports/{result['pdf_filename']}",
-            "timestamp": result["timestamp"],
-        }
-    )
+    result["pdf_url"] = f"/reports/{result['pdf_filename']}"
+    return jsonify(_build_scan_response(status="success", message="Analyse terminee.", result=result))
 
 
 @app.route("/reports/<path:filename>", methods=["GET"])
