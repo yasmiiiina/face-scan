@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PEREN AI - rPPG Multi-Scan</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h1>PEREN AI</h1>
+    <p>Scan rPPG distant (capture locale utilisateur)</p>
+    
+    <div class="video-container">
+        <video id="preview" autoplay muted playsinline></video>
+    </div>
+
+    <div class="controls">
+        <button id="startBtn">Demarrer le scan</button>
+        <button id="retryBtn" disabled>Nouveau scan</button>
+        <button id="downloadPdfBtn" disabled>Telecharger le PDF</button>
+    </div>
+
+    <div id="status" class="status">Pret. Autorise la camera puis lance un scan.</div>
+    <div id="results" class="results"></div>
+
+    <script>
+        const previewEl = document.getElementById('preview');
+        const startBtn = document.getElementById('startBtn');
+        const retryBtn = document.getElementById('retryBtn');
+        const downloadPdfBtn = document.getElementById('downloadPdfBtn');
+        const statusEl = document.getElementById('status');
+        const resultsEl = document.getElementById('results');
+
+        let stream = null;
+        let mediaRecorder = null;
+        let chunks = [];
+        let currentPdfUrl = null;
+        const targetDurationSec = 40;
+        let countdownTimer = null;
+
+        function setStatus(message) {
+            statusEl.textContent = message;
+        }
+
+        async function ensureCamera() {
+            if (stream) return stream;
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+                audio: false
+            });
+            previewEl.srcObject = stream;
+            return stream;
+        }
+
+        function updateButtonsDuringRecording(isRecording) {
+            startBtn.disabled = isRecording;
+            retryBtn.disabled = isRecording;
+            downloadPdfBtn.disabled = isRecording || !currentPdfUrl;
+        }
+
+        function renderResults(payload) {
+            const m = payload.metrics;
+            const s = payload.states;
+            resultsEl.innerHTML = `
+                <h3>Resultats</h3>
+                <p><strong>Scan ID:</strong> ${payload.scan_id}</p>
+                <p><strong>HR:</strong> ${m.hr} bpm</p>
+                <p><strong>HRV:</strong> ${m.hrv} ms</p>
+                <p><strong>RR:</strong> ${m.rr} cpm</p>
+                <p><strong>Score:</strong> ${m.score} / 100</p>
+                <p><strong>Etat global:</strong> ${s.wellness}</p>
+                <p><strong>Etat cardiaque:</strong> ${s.heart_rate}</p>
+                <p><strong>Stress:</strong> ${s.stress}</p>
+            `;
+        }
+
+        function startCountdown(seconds) {
+            let remaining = seconds;
+            setStatus(`Enregistrement en cours... ${remaining}s`);
+            clearInterval(countdownTimer);
+            countdownTimer = setInterval(() => {
+                remaining -= 1;
+                if (remaining <= 0) {
+                    clearInterval(countdownTimer);
+                    return;
+                }
+                setStatus(`Enregistrement en cours... ${remaining}s`);
+            }, 1000);
+        }
+
+        async function uploadRecording(blob) {
+            setStatus("Envoi de la video au serveur...");
+            const form = new FormData();
+            form.append("video", blob, "scan.webm");
+
+            const response = await fetch('/process_scan', { method: 'POST', body: form });
+            const payload = await response.json();
+            if (!response.ok || payload.status !== 'success') {
+                throw new Error(payload.message || "Traitement serveur impossible.");
+            }
+
+            currentPdfUrl = payload.pdf_url;
+            renderResults(payload);
+            downloadPdfBtn.disabled = false;
+            retryBtn.disabled = false;
+            setStatus("Analyse terminee. Tu peux telecharger le PDF ou lancer un nouveau scan.");
+        }
+
+        async function startScan() {
+            try {
+                await ensureCamera();
+                currentPdfUrl = null;
+                downloadPdfBtn.disabled = true;
+                chunks = [];
+
+                const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+                    ? 'video/webm;codecs=vp8'
+                    : 'video/webm';
+                mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) chunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const blob = new Blob(chunks, { type: mimeType });
+                    updateButtonsDuringRecording(false);
+                    try {
+                        await uploadRecording(blob);
+                    } catch (err) {
+                        setStatus(`Erreur: ${err.message}`);
+                    }
+                };
+
+                updateButtonsDuringRecording(true);
+                mediaRecorder.start();
+                startCountdown(targetDurationSec);
+
+                setTimeout(() => {
+                    if (mediaRecorder && mediaRecorder.state === 'recording') {
+                        mediaRecorder.stop();
+                    }
+                }, targetDurationSec * 1000);
+            } catch (err) {
+                setStatus(`Impossible de demarrer la camera: ${err.message}`);
+                updateButtonsDuringRecording(false);
+            }
+        }
+
+        function resetForRetry() {
+            resultsEl.innerHTML = "";
+            currentPdfUrl = null;
+            downloadPdfBtn.disabled = true;
+            setStatus("Pret pour un nouveau scan.");
+        }
+
+        startBtn.addEventListener('click', startScan);
+        retryBtn.addEventListener('click', () => {
+            resetForRetry();
+            startScan();
+        });
+        downloadPdfBtn.addEventListener('click', () => {
+            if (!currentPdfUrl) return;
+            window.open(currentPdfUrl, '_blank');
+        });
+    </script>
+</body>
+</html>

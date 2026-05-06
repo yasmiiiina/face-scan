@@ -9,7 +9,7 @@ class PDFReport:
     def __init__(self, csv_file="results.csv"):
         self.csv_file = csv_file
         
-    def generate(self):
+    def generate(self, output_path=None):
         if not os.path.exists(self.csv_file):
             print("Aucun fichier de résultat trouvé, rapport annulé.")
             return False
@@ -57,14 +57,14 @@ class PDFReport:
             # Insérer Image
             pdf.image(graph_path, x=10, y=pdf.get_y(), w=190)
             
-            report_name = f"PEREN_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            report_name = output_path or f"PEREN_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
             pdf.output(report_name)
             
             if os.path.exists(graph_path):
                 os.remove(graph_path)
                 
             print(f"Rapport PDF genere avec succes : {report_name}")
-            return True
+            return report_name
         except Exception as e:
             print(f"Erreur PDF : {e}")
             return False

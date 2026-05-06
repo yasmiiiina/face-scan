@@ -5,11 +5,8 @@ FROM python:3.10-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Installer les dépendances systèmes nécessaires pour OpenCV et MediaPipe
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# Install minimal requirements if needed (none strictly needed for headless opencv usually)
+# We avoid installing libgl1 and libglib2.0 to keep the image lightweight.
 
 # Définir le répertoire de travail
 WORKDIR /app
@@ -21,8 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copier le reste du code source
 COPY . .
 
-# Exposer le port sur lequel FastAPI va écouter
+# Exposer le port sur lequel Flask va écouter (Railway uses PORT env var)
 EXPOSE 10000
 
-# Lancer l'application avec uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+# Lancer l'application Flask.
+CMD sh -c "python main.py"
