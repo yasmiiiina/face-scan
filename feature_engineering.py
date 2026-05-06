@@ -9,6 +9,16 @@ class FeatureExtractor:
     def __init__(self):
         pass
 
+    def _safe_fps(self, fps, fallback=30.0):
+        """Normalise la valeur FPS pour eviter les calculs invalides."""
+        try:
+            fps_value = float(fps)
+        except (TypeError, ValueError):
+            fps_value = fallback
+        if not np.isfinite(fps_value) or fps_value <= 0:
+            fps_value = fallback
+        return fps_value
+
     def calculate_hrv(self, peaks, fps):
         """
         Calcule la Variabilité de Fréquence Cardiaque (HRV) estimée (RMSSD).
@@ -30,6 +40,7 @@ class FeatureExtractor:
         """
         Sépare le HR et le HRV.
         """
+        fps = self._safe_fps(fps)
         N = len(cardiac_signal)
         if N < 30: 
             return 0.0, 0.0
@@ -45,7 +56,8 @@ class FeatureExtractor:
         dominant_freq = fft_freqs[valid_indices][np.argmax(amplitudes[valid_indices])]
         hr = dominant_freq * 60.0
         
-        peaks, _ = find_peaks(cardiac_signal, distance=int(fps/4.0))
+        peak_distance = max(1, int(fps / 4.0))
+        peaks, _ = find_peaks(cardiac_signal, distance=peak_distance)
         hrv = self.calculate_hrv(peaks, fps)
         
         return hr, hrv
@@ -54,6 +66,7 @@ class FeatureExtractor:
         """
         Estime la fréquence respiratoire (Breathes Per Minute) via le signal respiratoire.
         """
+        fps = self._safe_fps(fps)
         N = len(resp_signal)
         if N < 30: 
             return 0.0

@@ -5,6 +5,87 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PEREN AI - rPPG Multi-Scan</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        :root { color-scheme: dark; }
+        body { background: #0c0f14; color: #eaf0ff; font-family: Inter, "Segoe UI", Arial, sans-serif; }
+        .video-container {
+            position: relative;
+            max-width: 840px;
+            width: min(92vw, 840px);
+            margin: 18px auto;
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid #2a313b;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+            background: #05070b;
+        }
+        #preview { display: block; width: 100%; height: auto; background: #05070b; }
+        .scan-overlay {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 220ms ease;
+        }
+        .scan-overlay.visible { opacity: 1; }
+        .overlay-reticle {
+            width: min(56vw, 380px);
+            aspect-ratio: 0.82;
+            border: 2px solid rgba(127, 217, 255, 0.92);
+            border-radius: 46% / 50%;
+            box-shadow:
+                0 0 0 9999px rgba(6, 10, 16, 0.45),
+                0 0 0 1px rgba(183, 233, 255, 0.35) inset,
+                0 0 18px rgba(79, 196, 255, 0.35);
+            position: relative;
+        }
+        .overlay-reticle::before,
+        .overlay-reticle::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            border: 1px dashed rgba(190, 234, 255, 0.45);
+            border-radius: 46% / 50%;
+        }
+        .overlay-reticle::before { width: 84%; height: 84%; }
+        .overlay-reticle::after { width: 66%; height: 66%; opacity: 0.65; }
+        .overlay-caption {
+            position: absolute;
+            bottom: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 12px;
+            color: rgba(232, 243, 255, 0.92);
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: rgba(8, 15, 25, 0.72);
+            border: 1px solid rgba(150, 198, 226, 0.28);
+            letter-spacing: 0.02em;
+        }
+        .results { display: none; }
+        .results.visible { display: block; }
+        .result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+        .result-card { background: #14181f; border: 1px solid #2a313b; border-radius: 10px; padding: 12px; }
+        .result-label { color: #8ea0b8; font-size: 12px; margin-bottom: 8px; }
+        .result-value { font-size: 22px; font-weight: 700; color: #f2f6ff; }
+        .result-unit { font-size: 12px; color: #a7b4c8; }
+        .state-row { margin-top: 14px; display: grid; gap: 6px; }
+        .status.success { color: #84e2b8; }
+        .status.error { color: #ff9f9f; }
+        .status.loading { color: #9ecbff; }
+        @media (max-width: 860px) {
+            .result-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 560px) {
+            .result-grid { grid-template-columns: 1fr; }
+            .overlay-reticle { width: min(68vw, 310px); }
+        }
+    </style>
 </head>
 <body>
     <h1>PEREN AI</h1>
@@ -12,6 +93,10 @@
     
     <div class="video-container">
         <video id="preview" autoplay muted playsinline></video>
+        <div id="scanOverlay" class="scan-overlay" aria-hidden="true">
+            <div class="overlay-reticle"></div>
+            <div class="overlay-caption">Place ton visage dans la zone cible</div>
+        </div>
     </div>
 
     <div class="controls">
@@ -21,7 +106,54 @@
     </div>
 
     <div id="status" class="status">Pret. Autorise la camera puis lance un scan.</div>
-    <div id="results" class="results"></div>
+    <div id="results" class="results" aria-live="polite">
+        <div class="result-header">
+            <h3>Resultats du scan</h3>
+            <span id="scan-id-label">Scan ID: N/A</span>
+        </div>
+        <div class="result-grid">
+            <div class="result-card">
+                <div class="result-label">Heart Rate</div>
+                <div id="heart-rate" class="result-value">--</div>
+                <div class="result-unit">BPM</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">HRV</div>
+                <div id="hrv" class="result-value">--</div>
+                <div class="result-unit">ms</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Breathing Rate</div>
+                <div id="respiratory-rate" class="result-value">--</div>
+                <div class="result-unit">cpm</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Score Global</div>
+                <div id="global-score" class="result-value">--</div>
+                <div class="result-unit">/100</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Blood Pressure</div>
+                <div id="blood-pressure" class="result-value">--</div>
+                <div class="result-unit">mmHg</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Stress Index</div>
+                <div id="stress-index" class="result-value">--</div>
+                <div class="result-unit">/100</div>
+            </div>
+            <div class="result-card">
+                <div class="result-label">Cardiac Workload</div>
+                <div id="cardiac-workload" class="result-value">--</div>
+                <div class="result-unit">%</div>
+            </div>
+        </div>
+        <div class="state-row">
+            <div><strong>Etat global:</strong> <span id="state-wellness">Indisponible</span></div>
+            <div><strong>Etat cardiaque:</strong> <span id="state-heart-rate">Indisponible</span></div>
+            <div><strong>Stress:</strong> <span id="state-stress">Indisponible</span></div>
+        </div>
+    </div>
 
     <script>
         const previewEl = document.getElementById('preview');
@@ -30,16 +162,52 @@
         const downloadPdfBtn = document.getElementById('downloadPdfBtn');
         const statusEl = document.getElementById('status');
         const resultsEl = document.getElementById('results');
+        const scanOverlayEl = document.getElementById('scanOverlay');
 
         let stream = null;
         let mediaRecorder = null;
         let chunks = [];
         let currentPdfUrl = null;
-        const targetDurationSec = 40;
+        const targetDurationSec = 20;
         let countdownTimer = null;
+        let isWaitingBackend = false;
+        let fpsTracking = null;
 
-        function setStatus(message) {
+        function setStatus(message, kind = "loading") {
             statusEl.textContent = message;
+            statusEl.className = `status ${kind}`;
+        }
+
+        function asNumberOrFallback(value, fallback = "--") {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : fallback;
+        }
+
+        function formatMetric(value, digits = 1) {
+            if (value === "--") return value;
+            return Number(value).toFixed(digits);
+        }
+
+        function resolveMetric(metrics, ...keys) {
+            for (const key of keys) {
+                if (metrics && metrics[key] !== undefined && metrics[key] !== null && metrics[key] !== "") {
+                    return metrics[key];
+                }
+            }
+            return "--";
+        }
+
+        async function safeJson(response) {
+            const rawText = await response.text();
+            if (!rawText) return {};
+            try {
+                return JSON.parse(rawText);
+            } catch {
+                return {
+                    status: "error",
+                    message: "Reponse serveur invalide."
+                };
+            }
         }
 
         async function ensureCamera() {
@@ -49,6 +217,7 @@
                 audio: false
             });
             previewEl.srcObject = stream;
+            scanOverlayEl.classList.add("visible");
             return stream;
         }
 
@@ -58,25 +227,50 @@
             downloadPdfBtn.disabled = isRecording || !currentPdfUrl;
         }
 
+        function setPdfButtonState(enabled) {
+            downloadPdfBtn.disabled = !enabled;
+        }
+
+        function showCameraView() {
+            scanOverlayEl.classList.add("visible");
+            previewEl.style.display = "block";
+            resultsEl.classList.remove("visible");
+        }
+
+        function showDashboardView() {
+            scanOverlayEl.classList.remove("visible");
+            previewEl.style.display = "none";
+            resultsEl.classList.add("visible");
+        }
+
         function renderResults(payload) {
-            const m = payload.metrics;
-            const s = payload.states;
-            resultsEl.innerHTML = `
-                <h3>Resultats</h3>
-                <p><strong>Scan ID:</strong> ${payload.scan_id}</p>
-                <p><strong>HR:</strong> ${m.hr} bpm</p>
-                <p><strong>HRV:</strong> ${m.hrv} ms</p>
-                <p><strong>RR:</strong> ${m.rr} cpm</p>
-                <p><strong>Score:</strong> ${m.score} / 100</p>
-                <p><strong>Etat global:</strong> ${s.wellness}</p>
-                <p><strong>Etat cardiaque:</strong> ${s.heart_rate}</p>
-                <p><strong>Stress:</strong> ${s.stress}</p>
-            `;
+            const m = payload?.metrics || payload?.biomarkers || {};
+            const s = payload?.states || {};
+            const hr = asNumberOrFallback(resolveMetric(m, "hr", "heart_rate"));
+            const hrv = asNumberOrFallback(resolveMetric(m, "hrv", "rmssd"));
+            const rr = asNumberOrFallback(resolveMetric(m, "rr", "respiratory_rate"));
+            const score = asNumberOrFallback(resolveMetric(m, "score", "global_score"));
+            const bp = resolveMetric(m, "bp", "blood_pressure");
+            const stressIdx = asNumberOrFallback(resolveMetric(m, "stress_index", "stress_idx"));
+            const workload = asNumberOrFallback(resolveMetric(m, "workload", "cardiac_workload"));
+
+            document.getElementById("scan-id-label").textContent = `Scan ID: ${payload?.scan_id || "N/A"}`;
+            document.getElementById("heart-rate").textContent = formatMetric(hr, 0);
+            document.getElementById("hrv").textContent = formatMetric(hrv, 1);
+            document.getElementById("respiratory-rate").textContent = formatMetric(rr, 1);
+            document.getElementById("global-score").textContent = formatMetric(score, 1);
+            document.getElementById("blood-pressure").textContent = bp === "--" ? "--" : bp;
+            document.getElementById("stress-index").textContent = formatMetric(stressIdx, 0);
+            document.getElementById("cardiac-workload").textContent = formatMetric(workload, 1);
+            document.getElementById("state-wellness").textContent = s?.wellness || "Indisponible";
+            document.getElementById("state-heart-rate").textContent = s?.heart_rate || "Indisponible";
+            document.getElementById("state-stress").textContent = s?.stress || "Indisponible";
+            showDashboardView();
         }
 
         function startCountdown(seconds) {
             let remaining = seconds;
-            setStatus(`Enregistrement en cours... ${remaining}s`);
+            setStatus(`Enregistrement en cours... ${remaining}s`, "loading");
             clearInterval(countdownTimer);
             countdownTimer = setInterval(() => {
                 remaining -= 1;
@@ -84,33 +278,116 @@
                     clearInterval(countdownTimer);
                     return;
                 }
-                setStatus(`Enregistrement en cours... ${remaining}s`);
+                setStatus(`Enregistrement en cours... ${remaining}s`, "loading");
             }, 1000);
         }
 
-        async function uploadRecording(blob) {
-            setStatus("Envoi de la video au serveur...");
+        async function postScanPayload(blob = null) {
+            setStatus("Envoi de la video au serveur...", "loading");
             const form = new FormData();
-            form.append("video", blob, "scan.webm");
+            if (blob) form.append("video", blob, "scan.webm");
+            const measuredFps = Number(fpsTracking?.measuredFps);
+            form.append("fps", Number.isFinite(measuredFps) && measuredFps > 0 ? String(measuredFps) : "30.0");
 
-            const response = await fetch('/process_scan', { method: 'POST', body: form });
-            const payload = await response.json();
-            if (!response.ok || payload.status !== 'success') {
-                throw new Error(payload.message || "Traitement serveur impossible.");
+            let response;
+            try {
+                response = await fetch('/process_scan', { method: 'POST', body: form });
+            } catch (networkError) {
+                throw new Error("Connexion serveur indisponible.");
             }
 
-            currentPdfUrl = payload.pdf_url;
-            renderResults(payload);
-            downloadPdfBtn.disabled = false;
-            retryBtn.disabled = false;
-            setStatus("Analyse terminee. Tu peux telecharger le PDF ou lancer un nouveau scan.");
+            return { response, payload: await safeJson(response) };
+        }
+
+        function startFpsTracking() {
+            const track = stream?.getVideoTracks?.()[0] || null;
+            const fallback = Number(track?.getSettings?.().frameRate) || 30.0;
+            fpsTracking = {
+                fallbackFps: Number.isFinite(fallback) && fallback > 0 ? fallback : 30.0,
+                measuredFps: Number.isFinite(fallback) && fallback > 0 ? fallback : 30.0,
+                frameCount: 0,
+                startedAt: performance.now(),
+                rafId: null
+            };
+            if (!previewEl.requestVideoFrameCallback) return;
+            const onFrame = () => {
+                if (!fpsTracking) return;
+                fpsTracking.frameCount += 1;
+                fpsTracking.rafId = previewEl.requestVideoFrameCallback(onFrame);
+            };
+            fpsTracking.rafId = previewEl.requestVideoFrameCallback(onFrame);
+        }
+
+        function stopFpsTracking() {
+            if (!fpsTracking) return 30.0;
+            if (previewEl.cancelVideoFrameCallback && fpsTracking.rafId !== null) {
+                previewEl.cancelVideoFrameCallback(fpsTracking.rafId);
+            }
+            const elapsedMs = performance.now() - fpsTracking.startedAt;
+            if (elapsedMs > 0 && fpsTracking.frameCount > 0) {
+                fpsTracking.measuredFps = (fpsTracking.frameCount * 1000) / elapsedMs;
+            }
+            const finalFps = Number(fpsTracking.measuredFps);
+            const safeFps = Number.isFinite(finalFps) && finalFps > 0 ? finalFps : fpsTracking.fallbackFps;
+            return Number.isFinite(safeFps) && safeFps > 0 ? safeFps : 30.0;
+        }
+
+        function waitMs(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        async function finishScan(blob, measuredFps = 30.0) {
+            isWaitingBackend = true;
+            startBtn.disabled = true;
+            retryBtn.disabled = true;
+            setPdfButtonState(false);
+            if (!fpsTracking) {
+                fpsTracking = { measuredFps: measuredFps, fallbackFps: 30.0 };
+            } else {
+                fpsTracking.measuredFps = measuredFps;
+            }
+
+            let firstAttempt = true;
+            const maxAttempts = 12;
+            for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+                setStatus(`Acquisition terminee. Analyse en cours (${attempt}/${maxAttempts})`, "loading");
+                const { response, payload } = await postScanPayload(firstAttempt ? blob : null);
+                firstAttempt = false;
+
+                if (response.ok && payload?.status === "success") {
+                    currentPdfUrl = payload?.pdf_url || null;
+                    renderResults(payload);
+                    retryBtn.disabled = false;
+                    setPdfButtonState(Boolean(currentPdfUrl));
+                    setStatus(
+                        currentPdfUrl
+                            ? "Analyse terminee. Tu peux telecharger le PDF ou lancer un nouveau scan."
+                            : "Analyse terminee. PDF indisponible, mais les biomarqueurs sont affiches.",
+                        "success"
+                    );
+                    startBtn.disabled = false;
+                    isWaitingBackend = false;
+                    return;
+                }
+
+                if (response.status === 202 || payload?.status === "pending" || payload?.status === "conflict") {
+                    const retryMs = Number(payload?.retry_after_ms || 1500);
+                    await waitMs(Number.isFinite(retryMs) ? retryMs : 1500);
+                    continue;
+                }
+
+                throw new Error(payload?.message || "Analyse indisponible pour cette tentative.");
+            }
+
+            throw new Error("Analyse trop longue. Relance un nouveau scan.");
         }
 
         async function startScan() {
             try {
                 await ensureCamera();
+                showCameraView();
                 currentPdfUrl = null;
-                downloadPdfBtn.disabled = true;
+                setPdfButtonState(false);
                 chunks = [];
 
                 const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
@@ -124,15 +401,22 @@
 
                 mediaRecorder.onstop = async () => {
                     const blob = new Blob(chunks, { type: mimeType });
+                    const measuredFps = stopFpsTracking();
+                    fpsTracking = { measuredFps, fallbackFps: 30.0 };
                     updateButtonsDuringRecording(false);
                     try {
-                        await uploadRecording(blob);
+                        await finishScan(blob, measuredFps);
                     } catch (err) {
-                        setStatus(`Erreur: ${err.message}`);
+                        setStatus("Analyse indisponible. Relance un nouveau scan.", "error");
+                        setPdfButtonState(false);
+                        startBtn.disabled = false;
+                        retryBtn.disabled = false;
+                        isWaitingBackend = false;
                     }
                 };
 
                 updateButtonsDuringRecording(true);
+                startFpsTracking();
                 mediaRecorder.start();
                 startCountdown(targetDurationSec);
 
@@ -142,16 +426,19 @@
                     }
                 }, targetDurationSec * 1000);
             } catch (err) {
-                setStatus(`Impossible de demarrer la camera: ${err.message}`);
+                setStatus("Impossible de demarrer la camera. Verifie les permissions.", "error");
                 updateButtonsDuringRecording(false);
             }
         }
 
         function resetForRetry() {
-            resultsEl.innerHTML = "";
+            resultsEl.classList.remove("visible");
             currentPdfUrl = null;
-            downloadPdfBtn.disabled = true;
-            setStatus("Pret pour un nouveau scan.");
+            isWaitingBackend = false;
+            fpsTracking = null;
+            showCameraView();
+            setPdfButtonState(false);
+            setStatus("Pret pour un nouveau scan.", "loading");
         }
 
         startBtn.addEventListener('click', startScan);
@@ -160,8 +447,8 @@
             startScan();
         });
         downloadPdfBtn.addEventListener('click', () => {
-            if (!currentPdfUrl) return;
-            window.open(currentPdfUrl, '_blank');
+            if (!currentPdfUrl || isWaitingBackend) return;
+            window.location.href = currentPdfUrl;
         });
     </script>
 </body>
