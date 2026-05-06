@@ -43,13 +43,4 @@ class ScoreCalculator:
         # Borner entre 0 et 100
         return max(0.0, min(100.0, score))
 
-    def classify_state(self, score):
-        """
-        Exporte une classification de l'état en tant que texte.
-        """
-        if score >= 80:
-            return "Équilibré"
-        elif score >= 60:
-            return "À surveiller"
-        else:
-            return "À risque"
+
